@@ -3,6 +3,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <vector>
+#include <queue>
 #include <chrono>
 #include <random>
 #include <cstdlib>
@@ -12,6 +13,14 @@
 using namespace std;
 
 // Global variables
+const int normalGhostSpeed = 600; 
+int ghostSpeed = normalGhostSpeed; 
+bool increasedSpeed = false; /
+const int numSpeedBoosts = 2;
+int availableBoosts = numSpeedBoosts;
+queue<int> boostQueue;
+mutex boostMutex;
+
 const int windowWidth = 1000;
 const int windowHeight = 1000;
 const int mazeWidth = 15;
@@ -21,6 +30,8 @@ char gameBoard[mazeHeight][mazeWidth];
 int pacmanPositionX;
 int pacmanPositionY;
 int score = 0;
+int boostedGhosts = 0;
+
 
 vector<pair<int, int>> fruitPositions;
 vector<pair<int, int>> ghostPositions;
@@ -36,7 +47,12 @@ condition_variable cv;
 sem_t semaphore;
 sem_t menuSemaphore;
 sem_t ghostSemaphore;
-// Constants for game objects
+sem_t speedBoostSemaphore;
+sem_t keySemaphore;
+sem_t permitSemaphore;
+mutex keyMutex;
+mutex permitMutex;
+
 const char WALL = '#';
 const char PATH = ' ';
 const char PELLET = '.';
@@ -44,8 +60,6 @@ const char POWER_PELLET = '*';
 const char PACMAN = 'P';
 const char GHOST = 'G';
 
-
-// Function prototypes
 void initializeGameBoard();
 void drawMaze(sf::RenderWindow& window);
 void drawPacman(sf::RenderWindow& window);
@@ -57,12 +71,11 @@ void GameEngine(sf::RenderWindow& window);
 void Menu(sf::RenderWindow& window);
 void drawScore(sf::RenderWindow& window); 
 
-const int powerupDuration = 5; // Duration of the power-up in seconds
-sf::Clock powerupTimer; // Timer to track the duration of the power-up
-// Texture obj1, obj2, obj3, obj4 , obj5 , obj6 , obj7 , obj8 ;
- sf::Clock gameClock; // Rename the clock variable
-//sf::Time elapsed = gameClock.getElapsedTime();
-// Implementation of functions
+const int powerupDuration = 5; 
+sf::Clock powerupTimer; 
+ sf::Clock gameClock; 
+ sf::Time elapsed1 = gameClock.getElapsedTime();
+ 
 void initializeGameBoard(bool powerup) {
   char hardcodedGameBoard[mazeHeight][mazeWidth] = {
        { WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL },
@@ -82,7 +95,6 @@ void initializeGameBoard(bool powerup) {
        { WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL, WALL }
     };                          
  
-    // Copy the hardcoded game board to the actual game board
     for (int i = 0; i < mazeHeight; ++i) {
         for (int j = 0; j < mazeWidth; ++j) {
             gameBoard[i][j] = hardcodedGameBoard[i][j];
@@ -102,16 +114,16 @@ void initializeGameBoard(bool powerup) {
                 break; // Break after clearing the pellet
             }
         }
-        
+        /*
         // Place the Power Pellet
         if (gameBoard[pelletY][pelletX] != WALL) {
             powerPos.push_back({ pelletX, pelletY });
             gameBoard[pelletY][pelletX] = POWER_PELLET;
         } else {
             i = i - 1; // If there's a wall, decrement the loop counter to try again
-        }
+        } 
+*/
     }
-
       for (int i = 0; i < mazeHeight; ++i) {
         for (int j = 0; j < mazeWidth; ++j) {
             if (gameBoard[i][j] == '.') {
@@ -120,7 +132,6 @@ void initializeGameBoard(bool powerup) {
         }
     }
 
-   
 
 for (int i = 0; i < mazeHeight; ++i) {
     for (int j = 0; j < mazeWidth; ++j) {
@@ -131,24 +142,32 @@ for (int i = 0; i < mazeHeight; ++i) {
     }
 }
 
-    pacmanPositionX = mazeWidth / 2;
-    pacmanPositionY = mazeHeight / 2;
+    pacmanPositionX = 1;	
+    pacmanPositionY = 1;  
     gameBoard[pacmanPositionY][pacmanPositionX] = PACMAN;
 
     for (int i = 0; i < 4; ++i) {
-        int ghostX = 1 + rand() % (mazeWidth - 2);
-        int ghostY = 1 + rand() % (mazeHeight - 2);
-        ghostPositions.push_back({ ghostX, ghostY });
-        gameBoard[ghostY][ghostX] = GHOST;	
+       // int ghostX = 1 + rand() % (mazeWidth - 2);
+       // int ghostY = 1 + rand() % (mazeHeight - 2);
+        int ghostX = mazeWidth / 2 - 1 + i;
+        int ghostY = mazeHeight/ 2 - 1 + i;
+        if (gameBoard[ghostY][ghostX] != WALL){
+           ghostPositions.push_back({ ghostX, ghostY });
+           gameBoard[ghostY][ghostX] = GHOST;	
+        }
+        else{
+           ghostX += 1;
+           ghostY -= 1;  
+           ghostPositions.push_back({ ghostX, ghostY });
+           gameBoard[ghostY][ghostX] = GHOST;
+        }
     }
-
-    
-}
+  
+} 
 
 void drawMaze(sf::RenderWindow& window) {
     sf::RectangleShape wall(sf::Vector2f(cellSize, cellSize));
     wall.setFillColor(sf::Color::White);
-
 
     for (int i = 0; i < mazeHeight; ++i) {
         for (int j = 0; j < mazeWidth; ++j) {
@@ -156,7 +175,6 @@ void drawMaze(sf::RenderWindow& window) {
                 wall.setPosition(j * cellSize, i * cellSize);
                 window.draw(wall);
             } 
-         
         }
     }
 }
@@ -214,6 +232,30 @@ void drawPacman(sf::RenderWindow& window) {
     pacman.setPosition(pacmanPositionX * cellSize, pacmanPositionY * cellSize);
     window.draw(pacman);
 }
+void initializeSemaphores() {
+    // Initialize semaphores with appropriate values
+    sem_init(&keySemaphore, 0, 2);
+    sem_init(&permitSemaphore, 0, 2);
+}
+
+void acquireKeyAndPermit(int ghostId) {
+    // Acquire key
+    sem_wait(&keySemaphore);
+    keyMutex.lock();
+    // Acquire permit
+    sem_wait(&permitSemaphore);
+    permitMutex.lock();
+
+}
+void releaseKeyAndPermit(int ghostId) {
+    // Release key
+    keyMutex.unlock();
+    sem_post(&keySemaphore);
+
+    // Release permit
+    permitMutex.unlock();
+    sem_post(&permitSemaphore);
+}
 
 void movePacman(char direction) {
     unique_lock<mutex> lock(mtx);
@@ -264,10 +306,10 @@ void drawScore(sf::RenderWindow& window){
     }
     sf::Text scoreText;
     scoreText.setFont(font);
-    scoreText.setString("Score: " + to_string(score)); // Convert score to string
-    scoreText.setCharacterSize(28); // Set the character size
-    scoreText.setFillColor(sf::Color::Black); // Set the fill color
-    scoreText.setPosition(8, 2); // Set the position at the top-left corner
+    scoreText.setString("Score: " + to_string(score)); 
+    scoreText.setCharacterSize(28); 
+    scoreText.setFillColor(sf::Color::Black); /
+    scoreText.setPosition(8, 2); 
     
     window.draw(scoreText);    
 }
@@ -290,25 +332,24 @@ void drawPowerPellet(sf::RenderWindow& window) {
     power.setFillColor(sf::Color::Cyan);
 
     for (const auto& pos : powerPos) {
-        // Check if the position is within the game board bounds
+      
         if (pos.second >= 0 && pos.second < mazeHeight && pos.first >= 0 && pos.first < mazeWidth) {
-            // Check if there's a pellet at the position
+           
             for (auto it = pelletPositions.begin(); it != pelletPositions.end(); ++it) {
                 if (it->first == pos.first && it->second == pos.second) {
-                    // Clear the pellet by removing it from the vector and updating the game board
+                
                     pelletPositions.erase(it);
                     gameBoard[pos.second][pos.first] = PATH;
-                    break; // Exit the loop after clearing the pellet
+                    break; 
                 }
             }
-            // Draw the Power Pellet at the position
             power.setPosition(pos.first * cellSize, pos.second * cellSize);
             window.draw(power);
         }
     }
 }
 
-
+/*
 void moveGhost(void *id_ptr) {
     int ghostId = *(int*)id_ptr;
     default_random_engine generator;
@@ -316,7 +357,7 @@ void moveGhost(void *id_ptr) {
 
     while (true) {
         // Sleep before acquiring the lock to prevent busy waiting
-//        this_thread::sleep_for(chrono::milliseconds(100));
+          this_thread::sleep_for(chrono::milliseconds(100));
 
         // Acquire the lock
         unique_lock<mutex> lock(mtx);
@@ -341,14 +382,13 @@ void moveGhost(void *id_ptr) {
         int newGhostX = ghostPositions[ghostId].first + dx;
         int newGhostY = ghostPositions[ghostId].second + dy;
 
-        if (gameBoard[newGhostY][newGhostX] != WALL) {
-            // Update ghost position
-            gameBoard[ghostPositions[ghostId].second][ghostPositions[ghostId].first] = PATH;
+       if (gameBoard[newGhostY][newGhostX] != WALL && gameBoard[newGhostY][newGhostX] != GHOST) {
+            // Update ghost position 
+            gameBoard[ghostPositions[ghostId].second][ghostPositions[ghostId].first] = PATH;	
             ghostPositions[ghostId].first = newGhostX;
             ghostPositions[ghostId].second = newGhostY;
             gameBoard[ghostPositions[ghostId].second][ghostPositions[ghostId].first] = GHOST;
         }
-
         // Unlock the mutex before notifying
         lock.unlock();
 
@@ -360,6 +400,88 @@ void moveGhost(void *id_ptr) {
         ts.tv_nsec = 500 * 1000000; // 500 milliseconds
 
         // Sleep to slow down ghost movement
+        nanosleep(&ts, NULL);
+    }
+} */
+
+void moveGhost(void *id_ptr) {
+    int ghostId = *(int*)id_ptr;
+    default_random_engine generator;
+    uniform_int_distribution<int> distribution(0, 3);
+
+    // Initialize ghost's current direction randomly
+    int dx = 0, dy = 0;
+    int direction = distribution(generator);
+    switch (direction) {
+        case 0: 
+            dy = -1;
+            break;
+        case 1:
+            dy = 1;
+            break;
+        case 2:
+            dx = -1;
+            break;
+        case 3:
+            dx = 1;
+            break;
+    }	
+
+    while (true) {
+        unique_lock<mutex> lock(mtx);
+        acquireKeyAndPermit(ghostId);
+
+        int newGhostX = ghostPositions[ghostId].first + dx;
+        int newGhostY = ghostPositions[ghostId].second + dy;
+
+        if (gameBoard[newGhostY][newGhostX] != WALL) {
+            
+            gameBoard[ghostPositions[ghostId].second][ghostPositions[ghostId].first] = PATH;
+            ghostPositions[ghostId].first = newGhostX;
+            ghostPositions[ghostId].second = newGhostY;
+            gameBoard[ghostPositions[ghostId].second][ghostPositions[ghostId].first] = GHOST;
+        } else {
+         
+            direction = distribution(generator);
+            switch (direction) {
+                case 0:
+                    dx = 0;
+                    dy = -1;
+                    break;
+                case 1:
+                    dx = 0;
+                    dy = 1;
+                    break;
+                case 2:
+                    dx = -1;
+                    dy = 0;
+                    break;
+                case 3:
+                    dx = 1;
+                    dy = 0; 
+                    break;
+            }
+        }
+releaseKeyAndPermit(ghostId);
+        lock.unlock();
+        cv.notify_all();
+
+        struct timespec ts;
+        ts.tv_sec = 0;
+        ts.tv_nsec = ghostSpeed * 1000000;
+         if (ghostId==0) {
+        cout<<elapsed1.asSeconds()<<endl;
+         if(elapsed1.asSeconds() > 15.000){
+  cout<<"in 1"<<endl;
+  
+    if (sem_trywait(&speedBoostSemaphore) == 0) {
+      
+        cout<<"in 2"<<endl;
+        ghostSpeed = 300; /
+        sem_post(&speedBoostSemaphore);
+    }
+    }
+}
         nanosleep(&ts, NULL);
     }
 }
@@ -400,14 +522,12 @@ void checkCollision(bool powerup) {
                 }
             } else {
             
-                // Move the ghost to the center of the game board
                 int centerX = mazeWidth / 2;
                 int centerY = mazeHeight / 2;
-                // Update ghost position in the ghostPositions vector
                 pos = {centerX, centerY};
                 // Update game board
-                gameBoard[pos.second][pos.first] = PATH; // Clear the previous position
-                gameBoard[centerY][centerX] = GHOST; // Update the new position
+                gameBoard[pos.second][pos.first] = PATH; 
+                gameBoard[centerY][centerX] = GHOST; 
                 cout << "GHOST DEAD" << endl;
                 score += 5;
                  if (powerup && powerupTimer.getElapsedTime().asSeconds() >= powerupDuration) {
@@ -422,10 +542,9 @@ void checkCollision(bool powerup) {
         const auto& pos = *it;
         if (pacmanPositionX == pos.first && pacmanPositionY == pos.second) {
             cout << pacmanPositionY << " , " << pacmanPositionX << " collided with power pellet " << endl;
-            // Set the powerup flag to true
+         
             powerup = true;
-            powerupTimer.restart(); // Restart the timer
-            // Remove the power pellet from the screen
+            powerupTimer.restart(); 
             powerPos.erase(it);
         }
     }
@@ -436,13 +555,11 @@ void checkCollisionFruit(int x, int y) {
     // Iterate over fruit positions to check collision
     for (auto it = fruitPositions.begin(); it != fruitPositions.end(); ++it) {
         if (it->first == x && it->second == y) {
-            score += 10; // Increase score
-            // Remove the fruit from the vector
+            score += 10; 
             fruitPositions.erase(it);
-               gameBoard[pacmanPositionY][pacmanPositionX] = PATH;
-            return; // Exit function after handling collision with one fruit
+            return; 
         }
-    }
+    } 		
 }
 void checkCollisionPellet(int x, int y) {
     // Check collision with pellets
@@ -450,22 +567,23 @@ void checkCollisionPellet(int x, int y) {
         if (it->first == y && it->second == x) {
             // Update score
             score += 2;
-            // Remove the pellet from the vector
             pelletPositions.erase(it);
-              gameBoard[x][y] = PATH;
+            //  gameBoard[x][y] = PATH;
            return;
         }
     }
 }
+///////////////////////////////////////////
 
 void GameEngine(sf::RenderWindow& window) {
+bool once=0;
+    bool check = false;
     srand(time(NULL));
 
     initializeGameBoard(powerup);
     pthread_t ghostThreads[4];
     int ghostIds[4]; // Create an array to hold ghost IDs
 
-    // Create separate ghost IDs for each thread
     for (int i = 0; i < 4; ++i) {
         ghostIds[i] = i;
         pthread_create(&ghostThreads[i], NULL, (void *(*)(void *))moveGhost, (void *)&ghostIds[i]);
@@ -504,12 +622,11 @@ case sf::Keyboard::P:
     texture.loadFromFile("img/menu2.png");
     sprite.setTexture(texture);
     sprite.setPosition(200, 200);
-    // If the game is not paused, pause it
+ 
     if (!paused)
     {
-        paused = true; // Set the paused flag to true
+        paused = true; 
 
-        // Loop to display menu until a key is pressed
         while (window.isOpen() && paused)
         {
             // Process events
@@ -521,10 +638,10 @@ case sf::Keyboard::P:
                 {
                     window.close();
                 }
-                // Check if P is pressed again to resume the game
+            
                 else if (event.type == sf::Event::KeyPressed && event.key.code == sf::Keyboard::P)
                 {
-                    paused = false; // Set the paused flag to false to resume the game
+                    paused = false; 
                 }
             }
 
@@ -536,42 +653,50 @@ case sf::Keyboard::P:
             window.display();
         }
     }
-    // If the game is paused, resume it
+
     else
     {
-        paused = false; // Set the paused flag to false to resume the game
+        paused = false; 
     }
-    break; // Don't forget to break after the case
+    break; /
 }
            
                 default:
                     break;
                 }
-cout<<"----"<<endl;
+                cout<<"----"<<endl;
                 movePacman(direction);
                 cout<<pacmanPositionX<<" "<<pacmanPositionY<<endl;
-                   checkCollisionFruit(pacmanPositionX, pacmanPositionY);
-                      checkCollisionPellet(pacmanPositionX, pacmanPositionY); // Add this line
+                checkCollisionFruit(pacmanPositionX, pacmanPositionY);
+                checkCollisionPellet(pacmanPositionX, pacmanPositionY); // Add this line
                 //checkCollision();
-              checkCollision(powerup);
+                checkCollision(powerup);
             }
-
         }
       
-    sf::Time elapsed = clock.getElapsedTime();
+        sf::Time elapsed = clock.getElapsedTime();
         // Output the elapsed time in seconds to the terminal
         //cout << "Time elapsed: " << elapsed.asSeconds() << " seconds" << endl;
 
         window.clear(sf::Color::Black);
- //       initializeGameBoard( powerup); 
+     // initializeGameBoard( powerup); 
         drawMaze(window);
         drawPacman(window);
-        
+       // increaseGhostSpeed(10); 
+     /*
+       if (elapsed.asSeconds() > 10.000 && elapsed.asSeconds() < 18.000){
+           ghostSpeed = 200;
+       }
+       else{
+           ghostSpeed = 600;
+       }
+       */
         if (elapsed.asSeconds() > 8.000 && elapsed.asSeconds() < 20.000 ){ // !check){        
         
-           check = 1; // Set the flag to true to indicate that power pellets need to be added
+      // Set the flag to true to indicate that power pellets need to be added
            if (check == false){           
-            // addPellet(window);
+             addPellet(window);
+     	      
             }
             check = true;
             drawPowerPellet(window); // Add power pellets to the screen
@@ -582,20 +707,40 @@ cout<<"----"<<endl;
         powerup=false;
         }
          
-        
+         if(elapsed.asSeconds()>20.00)
+         {
+         
+         if(once==0){
+         
+         for(int i=0 ; i< mazeWidth ; i++){
+          for(int j=0 ; i<mazeHeight ; j++){
           
-            //powerPelletsAdded = true;
+         if(gameBoard[i][j]==POWER_PELLET)
+         {
+         
+         gameBoard[i][j]=PATH;
+         }
+         
+         }
+         
+         
+         }
+         
+       }
+        
+    }      
+     //   powerPelletsAdded = true;
      //   window.clear(sf::Color::Black);
      //   drawMaze(window);
      //   drawPacman(window);
         drawGhosts(window);
         drawScore(window);
         drawFruit(window);
-         drawPellets(window); // Add this line
-             
+        drawPellets(window); // Add this line
+            
         window.display();
     }
-    // Signal that the game loop has finished using a semaphore
+
     sem_post(&semaphore);
 }
 
@@ -605,7 +750,7 @@ void mainmenu(sf::RenderWindow& window) {
     texture5.loadFromFile("img/welcome.png");
     sprite5.setTexture(texture5);
     sprite5.setPosition(0, 0);
-    
+
     bool startPressed = false;
     bool controlsPressed = false;
 
@@ -616,14 +761,12 @@ void mainmenu(sf::RenderWindow& window) {
 
         sf::Event event;
 
-        // Check if the start or controls key is pressed
         if (sf::Keyboard::isKeyPressed(sf::Keyboard::Num1) || sf::Keyboard::isKeyPressed(sf::Keyboard::Numpad1)) {
             startPressed = true;
         } else if (sf::Keyboard::isKeyPressed(sf::Keyboard::C)) {
             controlsPressed = true;
         }
 
-        // Break the loop if start key is pressed
         if (startPressed) {
             break;
         }
@@ -642,10 +785,10 @@ void mainmenu(sf::RenderWindow& window) {
             if (controlsEvent.type == sf::Event::Closed) {
                 controlsWindow.close();
             }
-            // Check if the "B" key is pressed to go back to the main menu
+      
             if (controlsEvent.type == sf::Event::KeyPressed && controlsEvent.key.code == sf::Keyboard::B) {
-                controlsWindow.close(); // Close the controls window
-                break; // Break out of the controls window loop
+                controlsWindow.close(); /
+                break; 
             }
         }
 
@@ -654,7 +797,7 @@ void mainmenu(sf::RenderWindow& window) {
         controlsWindow.display();
     }
 
-    controlsPressed = false; // Reset the controlsPressed flag after closing the controls window
+    controlsPressed = false; 
 }
     }
 
@@ -663,8 +806,13 @@ void mainmenu(sf::RenderWindow& window) {
 
 int main() {
     // Initialize the semaphore
-    sem_init(&semaphore, 0, 0);
+    sem_init(&semaphore, 0, 0); //ghost boost
     sem_init(&menuSemaphore, 0, 0);
+     
+      initializeSemaphores();
+   int numSpeedBoosts = 2; // Assuming you have 2 speed boosts
+    sem_init(&speedBoostSemaphore, 0, numSpeedBoosts);
+    
     sf::RenderWindow window(sf::VideoMode(windowWidth, windowHeight), "SFML Maze");
 
     pthread_t menuThread;
